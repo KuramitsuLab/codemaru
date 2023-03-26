@@ -4,100 +4,7 @@ import random
 # from libda import da_first, da_random
 
 
-def _quote_alt(s):
-    if s.startswith('[') and s.startswith(']'):
-        return s
-    return f'[{s}]'
-
-
-class CodeMaru(object):
-    def __init__(self):
-        self.imports = {}
-        self.janames = {}
-        self.varnames = {}
-        self.pairs = []
-        self.altdic = {}
-        self.vocab = {}
-
-    def prepare(self):
-        newpairs = []
-        for code, ty, doc in self.pairs:
-            ss = []
-            for line in doc.splitlines():
-                if line == '' or line.startswith('#'):
-                    continue
-                elif line.startswith('@'):
-                    self.parse_dic(line)
-                else:
-                    line = self.replace_alt(line)
-                    ss.append(line)
-            doc = '\n'.join(ss)
-            newpairs.append((code, ty, doc))
-        self.pairs = newpairs
-
-    def parse_dic(self, s):
-        # @alt(文字|文字列) を読む
-        if s.startswith('@alt(') and s.endswith(')'):
-            s = s[5:-1]
-            if '=' in s:
-                key, _, s = s.partition('=')
-                self.altdic[key] = _quote_alt(s)
-            else:
-                key, _, _ = s.partition('|')
-                self.altdic[key] = _quote_alt(s)
-        # @import(file_vocab.py)  # 外部ファイルを読む
-        if s.startswith('@import(') and s.endswith(')'):
-            s = s[8:-1]
-            with open(s) as f:
-                env = {}
-                exec(f.read(), None, env)
-                print(env)
-                if 'ALTDIC' in env:
-                    self.altdic.update(env['ALTDIC'])
-                if 'VOCAB' in env:
-                    self.vocab.update(env['VOCAB'])
-
-    def replace_alt(self, s):
-        for old, new in self.altdic.items():
-            if old in s:
-                # print('=>', old, new)
-                s = s.replace(old, new)
-        return s
-
-    def replace_vocab(self, code, line):
-        for v, vs in self.vocab.items():
-            oldv, olds = vs[0]
-            if oldv in code and olds in line:
-                newv, news = random.choice(vs)
-                code = code.replace(oldv, newv)
-                line = line.replace(olds, news)
-        return code, line
-
-    def generate(self, n_times=1):
-        ss = []
-        for code, ty, doc in self.pairs:
-            dup = set()
-            for line in doc.splitlines():
-                code2, line2 = self.replace_vocab(code, line)
-                # line2 = da_first(line2)
-                dup.add((code2, ty, line2))
-                # for _ in range(n_times):
-                #     code2, line2 = self.replace_vocab(code, line)
-                #     line2 = da_random(line2)
-                #     dup.add((code2, ty, line2))
-            ss.extend(list(dup))
-        return ss
-
-
-def tostr(tree):
-    if isinstance(tree, ast.Name):
-        return tree.id
-    if isinstance(tree, ast.Constant):
-        return tree.value
-    return repr(tree)
-
-
-class CodeMaruAst(CodeMaru):
+class CodeAst(object):
 
     def __init__(self):
         super().__init__()
@@ -108,6 +15,7 @@ class CodeMaruAst(CodeMaru):
         self.lines = []
         self.linerange = None
         self.varenv = {}
+        self.multies = []
 
     def getline(self, lineno, end_lineno=None):
         end_lineno = end_lineno or lineno
@@ -145,14 +53,17 @@ class CodeMaruAst(CodeMaru):
         for name in tree.targets:
             name = tostr(name)
             self.extract_varenv(self.getline(tree.lineno, tree.end_lineno))
-            if name.startswith('_') and name.endswith('_'):
-                janame = ''
-                comment = self.getline(tree.end_lineno)  # コメント最終行
-                if '#' in comment:
-                    _, _, janame = comment.rpartition('#')
-                    janame = janame.strip()
-                self.defvar(name, tree.value, janame)
+            if name == '_':
+                self.multies.append(self.varenv['_'])
                 return
+            # if name.startswith('_') and name.endswith('_'):
+            #     janame = ''
+            #     comment = self.getline(tree.end_lineno)  # コメント最終行
+            #     if '#' in comment:
+            #         _, _, janame = comment.rpartition('#')
+            #         janame = janame.strip()
+            #     self.defvar(name, tree.value, janame)
+            #     return
         self.append_code(tree)
 
     def extract_varenv(self, code):
@@ -189,26 +100,131 @@ class CodeMaruAst(CodeMaru):
         if self.linerange is None:
             return
         code = self.getline(*self.linerange)
-        ty = ''
-        if '# ->' in code:
-            code, _, ty = code.rpartition('# ->')
-            code = code.strip()
-            ty = ty.strip()
-        else:
-            try:
-                v = eval(code, None, self.varenv)
-                ty = type(v).__name__
-            except SyntaxError as e:
-                pass
-            except Exception as e:
-                print(f'\033[34m[🐶]{repr(e)}\033[0m\n{code}')
-        self.pairs.append((code, ty, doc))
+        ret = ''
+        try:
+            v = eval(code, None, self.varenv)
+            ret = type(v).__name__
+        except SyntaxError as e:
+            pass
+        except Exception as e:
+            print(f'\033[34m[🐶]{repr(e)}\033[0m\n{code}')
+        self.pairs.append((code, ret, doc))
         self.linerange = None
+
+
+def _quote_alt(s):
+    if s.startswith('[') and s.startswith(']'):
+        return s
+    return f'[{s}]'
+
+
+class CodeMaru(CodeAst):
+    def __init__(self):
+        CodeAst.__init__(self)
+        self.imports = {}
+        self.janames = {}
+        self.varnames = {}
+        self.pairs = []
+        self.altdic = {}
+        self.vocab = {}
+
+    def prepare(self):
+        newpairs = []
+        for code, ret, doc in self.pairs:
+            ss = []
+            for line in doc.splitlines():
+                if line == '' or line.startswith('@'):
+                    continue
+                line = self.replace_alt(line)
+                ss.append(line)
+                verb = self.to_verb(ret, line)
+                if verb:
+                    ss.append(verb)
+            doc = '\n'.join(ss)
+            newpairs.append((code, ret, doc))
+        self.pairs = newpairs
+
+    def to_verb(self, ret, s):
+        if ret != '' and s.endswith(']'):
+            verb, _, _ = s.rpartition('[')
+            if verb.endswith('した'):
+                return verb[:-2]+'する'
+        if ret == 'bool' and s.endswith('かどうか'):
+            return s[:-3]+'判定する'
+        return None
+
+    # def parse_dic(self, s):
+    #     # @alt(文字|文字列) を読む
+    #     if s.startswith('@alt(') and s.endswith(')'):
+    #         s = s[5:-1]
+    #         if '=' in s:
+    #             key, _, s = s.partition('=')
+    #             self.altdic[key] = _quote_alt(s)
+    #         else:
+    #             key, _, _ = s.partition('|')
+    #             self.altdic[key] = _quote_alt(s)
+    #     # @import(file_vocab.py)  # 外部ファイルを読む
+    #     if s.startswith('@import(') and s.endswith(')'):
+    #         s = s[8:-1]
+    #         with open(s) as f:
+    #             env = {}
+    #             exec(f.read(), None, env)
+    #             print(env)
+    #             if 'ALTDIC' in env:
+    #                 self.altdic.update(env['ALTDIC'])
+    #             if 'VOCAB' in env:
+    #                 self.vocab.update(env['VOCAB'])
+
+    def replace_alt(self, s):
+        for old, new in self.altdic.items():
+            if old in s:
+                # print('=>', old, new)
+                s = s.replace(old, new)
+        return s
+
+    def replace_vocab(self, code, line):
+        for v, vs in self.vocab.items():
+            oldv, olds = vs[0]
+            if oldv in code and olds in line:
+                newv, news = random.choice(vs)
+                code = code.replace(oldv, newv)
+                line = line.replace(olds, news)
+        return code, line
+
+    def generate(self):
+        ss = []
+        for code, ret, doc in self.pairs:
+            for line in doc.splitlines():
+                ss.append((code, ret, line))
+        return ss
+
+    def generate0(self, n_times=1):
+        ss = []
+        for code, ty, doc in self.pairs:
+            dup = set()
+            for line in doc.splitlines():
+                code2, line2 = self.replace_vocab(code, line)
+                # line2 = da_first(line2)
+                dup.add((code2, ty, line2))
+                # for _ in range(n_times):
+                #     code2, line2 = self.replace_vocab(code, line)
+                #     line2 = da_random(line2)
+                #     dup.add((code2, ty, line2))
+            ss.extend(list(dup))
+        return ss
+
+
+def tostr(tree):
+    if isinstance(tree, ast.Name):
+        return tree.id
+    if isinstance(tree, ast.Constant):
+        return tree.value
+    return repr(tree)
 
 
 if __name__ == '__main__':
     for f in sys.argv[1:]:
-        cp = CodeMaruAst()
+        cp = CodeMaru()
         cp.load(f)
         cp.prepare()
         for rec in cp.generate():
